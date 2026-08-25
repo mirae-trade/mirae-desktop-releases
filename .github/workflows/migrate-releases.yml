@@ -1,0 +1,60 @@
+name: Migrate desktop releases
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    name: Migrate ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        tag: [v0.1.0, v0.2.0, v0.2.1, v0.2.2, v0.2.3]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_REPO: mirae-trade/mirae
+      TARGET_REPO: mirae-trade/mirae-desktop-releases
+      TAG: ${{ matrix.tag }}
+    steps:
+      - name: Download and verify original assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir assets
+          gh release view "$TAG" --repo "$SOURCE_REPO" --json name,body,isPrerelease,assets > metadata.json
+          gh release download "$TAG" --repo "$SOURCE_REPO" --dir assets
+          jq -r '.assets[] | [.name, (.digest | sub("^sha256:"; ""))] | @tsv' metadata.json |
+          while IFS=$'\t' read -r name expected; do
+            actual="$(sha256sum "assets/$name" | awk '{print $1}')"
+            test "$actual" = "$expected"
+          done
+
+      - name: Publish migrated release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            echo "$TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+          title="$(jq -r '.name' metadata.json)"
+          {
+            echo "Migrated official Mirae Desktop binary release from the previous distribution repository."
+            echo
+            jq -r '.body' metadata.json
+          } > notes.md
+          prerelease=()
+          if test "$(jq -r '.isPrerelease' metadata.json)" = "true"; then
+            prerelease+=(--prerelease)
+          fi
+          gh release create "$TAG" assets/* \
+            --repo "$TARGET_REPO" \
+            --target main \
+            --title "$title" \
+            --notes-file notes.md \
+            "${prerelease[@]}"
